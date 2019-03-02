@@ -16,7 +16,7 @@ spec:
       containers:
         - name: zookeeper-operator
           # Replace this with the built image name
-          image: REPLACE_IMAGE
+          image: ronin13/zookeeper
           command:
           - zookeeper-operator
           imagePullPolicy: Always
