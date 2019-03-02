@@ -42,5 +42,6 @@ rules:
   - wnohang.net
   resources:
   - '*'
+  - zookeepers
   verbs:
   - '*'
