@@ -10,6 +10,8 @@ import (
 // ZookeeperSpec defines the desired state of Zookeeper
 // +k8s:openapi-gen=true
 type ZookeeperSpec struct {
+	Nodes int32  `json:"nodes"`
+	Name  string `json:"cluster_name"`
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 	// Add custom validation using kubebuilder tags: https://book.kubebuilder.io/beyond_basics/generating_crd.html

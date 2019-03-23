@@ -4,6 +4,7 @@ import (
 	"context"
 
 	wnohangv1alpha1 "github.com/ronin13/zookeeper-operator/pkg/apis/wnohang/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -100,20 +101,40 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
-	// Define a new Pod object
-	pod := newPodForCR(instance)
-
-	// Set Zookeeper instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
+	foundService := &corev1.Service{}
+	zooService, err := newServiceforCR(instance)
+	if err != nil {
+		reqLogger.Error(err, "Failed to get service for zookeeper cluster")
+		return reconcile.Result{}, err
+	}
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: zooService.Name, Namespace: zooService.Namespace}, foundService)
+	if err != nil && errors.IsNotFound(err) {
+		reqLogger.Info("Creating a new Service ", "Service.Namespace", zooService.Namespace, "Service.Name", zooService.Name)
+		err = r.client.Create(context.TODO(), zooService)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+		// return reconcile.Result{}, nil
+	} else if err != nil {
 		return reconcile.Result{}, err
 	}
 
-	// Check if this Pod already exists
-	found := &corev1.Pod{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
+	zooSet, err := newStatefulSetForCR(instance)
+	if err != nil {
+		reqLogger.Error(err, "Failed to get statefulset")
+		return reconcile.Result{}, err
+	}
+
+	// Set Zookeeper instance as the owner and controller
+	if err := controllerutil.SetControllerReference(instance, zooSet, r.scheme); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	found := &appsv1.StatefulSet{}
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: zooSet.Name, Namespace: zooSet.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-		err = r.client.Create(context.TODO(), pod)
+		reqLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", zooSet.Namespace, "StatefulSet.Name", zooSet.Name)
+		err = r.client.Create(context.TODO(), zooSet)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
@@ -125,29 +146,91 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 	}
 
 	// Pod already exists - don't requeue
-	reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
+	reqLogger.Info("Skip reconcile: StatefulSet already exists", "StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
 	return reconcile.Result{}, nil
 }
 
-// newPodForCR returns a busybox pod with the same name/namespace as the cr
-func newPodForCR(cr *wnohangv1alpha1.Zookeeper) *corev1.Pod {
+func newServiceforCR(cr *wnohangv1alpha1.Zookeeper) (*corev1.Service, error) {
+	serviceName := cr.Name
 	labels := map[string]string{
-		"app": cr.Name,
+		"app":     serviceName,
+		"cluster": cr.Spec.Name,
 	}
-	return &corev1.Pod{
+	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Service",
+		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-pod",
+			Name:      serviceName,
 			Namespace: cr.Namespace,
 			Labels:    labels,
 		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				"cluster": cr.Spec.Name,
+			},
+			Ports: []corev1.ServicePort{
 				{
-					Name:    "busybox",
-					Image:   "busybox",
-					Command: []string{"sleep", "3600"},
+					Name: "client",
+					Port: 2181,
+				},
+			},
+			ClusterIP: "None",
+		},
+	}, nil
+
+}
+
+func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, error) {
+	labels := map[string]string{
+		"app":     cr.Name,
+		"cluster": cr.Spec.Name,
+	}
+
+	return &appsv1.StatefulSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "StatefulSet",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cr.Name,
+			Namespace: cr.Namespace,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			ServiceName: cr.Name,
+			Replicas:    &cr.Spec.Nodes,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "zookeeper",
+							Image: "zookeeper",
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "client",
+									ContainerPort: 2181,
+								},
+								{
+									Name:          "leader-election",
+									ContainerPort: 2888,
+								},
+								{
+									Name:          "cluster-comms",
+									ContainerPort: 3888,
+								},
+							},
+						},
+					},
 				},
 			},
 		},
-	}
+	}, nil
+
 }
