@@ -7,17 +7,17 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// AppServiceSpec defines the desired state of AppService
+// ZookeeperSpec defines the desired state of Zookeeper
 // +k8s:openapi-gen=true
-type AppServiceSpec struct {
+type ZookeeperSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 	// Add custom validation using kubebuilder tags: https://book.kubebuilder.io/beyond_basics/generating_crd.html
 }
 
-// AppServiceStatus defines the observed state of AppService
+// ZookeeperStatus defines the observed state of Zookeeper
 // +k8s:openapi-gen=true
-type AppServiceStatus struct {
+type ZookeeperStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 	// Add custom validation using kubebuilder tags: https://book.kubebuilder.io/beyond_basics/generating_crd.html
@@ -25,25 +25,25 @@ type AppServiceStatus struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// AppService is the Schema for the appservices API
+// Zookeeper is the Schema for the zookeepers API
 // +k8s:openapi-gen=true
-type AppService struct {
+type Zookeeper struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AppServiceSpec   `json:"spec,omitempty"`
-	Status AppServiceStatus `json:"status,omitempty"`
+	Spec   ZookeeperSpec   `json:"spec,omitempty"`
+	Status ZookeeperStatus `json:"status,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// AppServiceList contains a list of AppService
-type AppServiceList struct {
+// ZookeeperList contains a list of Zookeeper
+type ZookeeperList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []AppService `json:"items"`
+	Items           []Zookeeper `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&AppService{}, &AppServiceList{})
+	SchemeBuilder.Register(&Zookeeper{}, &ZookeeperList{})
 }

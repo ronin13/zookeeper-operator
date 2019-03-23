@@ -1,7 +1,7 @@
 apiVersion: wnohang.net/v1alpha1
-kind: AppService
+kind: Zookeeper
 metadata:
-  name: example-appservice
+  name: example-zookeeper
 spec:
   # Add fields here
   size: 3

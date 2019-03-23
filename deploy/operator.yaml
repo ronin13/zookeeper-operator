@@ -16,10 +16,10 @@ spec:
       containers:
         - name: zookeeper-operator
           # Replace this with the built image name
-          image: ronin13/zookeeper
+          image: zookeeper-operator
           command:
           - zookeeper-operator
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             - name: WATCH_NAMESPACE
               valueFrom:
