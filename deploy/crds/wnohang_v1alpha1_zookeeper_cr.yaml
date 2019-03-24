@@ -4,4 +4,4 @@ metadata:
   name: zoos
 spec:
   # Add fields here
-    nodes: 1
+    nodes: 3

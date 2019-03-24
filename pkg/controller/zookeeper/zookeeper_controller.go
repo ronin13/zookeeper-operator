@@ -2,6 +2,7 @@ package zookeeper
 
 import (
 	"context"
+	"strconv"
 
 	wnohangv1alpha1 "github.com/ronin13/zookeeper-operator/pkg/apis/wnohang/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -21,7 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
-var log = logf.Log.WithName("controller_zookeeper")
+var log = logf.Log.WithName("Zookeeper Operator")
 
 /**
 * USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
@@ -151,10 +152,9 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 }
 
 func newServiceforCR(cr *wnohangv1alpha1.Zookeeper) (*corev1.Service, error) {
-	serviceName := cr.Name
+	serviceName := cr.Name + "-serv"
 	labels := map[string]string{
-		"app":     serviceName,
-		"cluster": cr.Spec.Name,
+		"app": serviceName,
 	}
 	return &corev1.Service{
 		TypeMeta: metav1.TypeMeta{
@@ -168,7 +168,7 @@ func newServiceforCR(cr *wnohangv1alpha1.Zookeeper) (*corev1.Service, error) {
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
-				"cluster": cr.Spec.Name,
+				"app": cr.Name,
 			},
 			Ports: []corev1.ServicePort{
 				{
@@ -184,8 +184,13 @@ func newServiceforCR(cr *wnohangv1alpha1.Zookeeper) (*corev1.Service, error) {
 
 func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, error) {
 	labels := map[string]string{
-		"app":     cr.Name,
-		"cluster": cr.Spec.Name,
+		"app": cr.Name,
+	}
+
+	zooIDs := "1"
+
+	for nd := 2; nd <= int(cr.Spec.Nodes); nd++ {
+		zooIDs += "," + strconv.Itoa(nd)
 	}
 
 	return &appsv1.StatefulSet{
@@ -201,8 +206,9 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, er
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
-			ServiceName: cr.Name,
-			Replicas:    &cr.Spec.Nodes,
+			ServiceName:         cr.Name + "-serv",
+			PodManagementPolicy: appsv1.ParallelPodManagement,
+			Replicas:            &cr.Spec.Nodes,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
@@ -210,8 +216,9 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, er
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
-							Name:  "zookeeper",
-							Image: "zookeeper",
+							Name:            "zookeeper",
+							Image:           "ronin13/zookeeper-k8s",
+							ImagePullPolicy: corev1.PullIfNotPresent,
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "client",
@@ -224,6 +231,12 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, er
 								{
 									Name:          "cluster-comms",
 									ContainerPort: 3888,
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name:  "ZOO_IDS",
+									Value: zooIDs,
 								},
 							},
 						},
