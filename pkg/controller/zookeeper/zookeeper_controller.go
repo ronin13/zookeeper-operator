@@ -217,7 +217,7 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, er
 					Containers: []corev1.Container{
 						{
 							Name:            "zookeeper",
-							Image:           "ronin13/zookeeper-k8s",
+							Image:           "ronin/zookeeper-k8s",
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							Ports: []corev1.ContainerPort{
 								{
