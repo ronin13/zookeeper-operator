@@ -2,7 +2,11 @@ package zookeeper
 
 import (
 	"context"
+	"fmt"
 	"strconv"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	wnohangv1alpha1 "github.com/ronin13/zookeeper-operator/pkg/apis/wnohang/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -23,6 +27,10 @@ import (
 )
 
 var log = logf.Log.WithName("Zookeeper Operator")
+
+const (
+	reconcileInterval = 10
+)
 
 /**
 * USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
@@ -77,10 +85,22 @@ type ReconcileZookeeper struct {
 	scheme *runtime.Scheme
 }
 
+func (r *ReconcileZookeeper) getClient(request reconcile.Request) (*wnohangv1alpha1.Zookeeper, error) {
+	// Fetch the Zookeeper instance
+	instance := &wnohangv1alpha1.Zookeeper{}
+	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		// Error reading the object - requeue the request.
+		return nil, fmt.Errorf("Failed to fetch zookeeper instance")
+	}
+	return instance, nil
+}
+
 // Reconcile reads that state of the cluster for a Zookeeper object and makes changes based on the state read
 // and what is in the Zookeeper.Spec
-// TODO(user): Modify this Reconcile function to implement your Controller logic.  This example creates
-// a Pod as an example
 // Note:
 // The Controller will requeue the Request to be processed again if the returned error is non-nil or
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
@@ -88,67 +108,73 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 	reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 	reqLogger.Info("Reconciling Zookeeper")
 
-	// Fetch the Zookeeper instance
-	instance := &wnohangv1alpha1.Zookeeper{}
-	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
+	instance, err := r.getClient(request)
 	if err != nil {
-		if errors.IsNotFound(err) {
-			// Request object not found, could have been deleted after reconcile request.
-			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
-			// Return and don't requeue
-			return reconcile.Result{}, nil
-		}
-		// Error reading the object - requeue the request.
 		return reconcile.Result{}, err
 	}
-
-	foundService := &corev1.Service{}
-	zooService, err := newServiceforCR(instance)
-	if err != nil {
-		reqLogger.Error(err, "Failed to get service for zookeeper cluster")
-		return reconcile.Result{}, err
-	}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: zooService.Name, Namespace: zooService.Namespace}, foundService)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Service ", "Service.Namespace", zooService.Namespace, "Service.Name", zooService.Name)
-		err = r.client.Create(context.TODO(), zooService)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-		// return reconcile.Result{}, nil
-	} else if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	zooSet, err := newStatefulSetForCR(instance)
-	if err != nil {
-		reqLogger.Error(err, "Failed to get statefulset")
-		return reconcile.Result{}, err
-	}
-
-	// Set Zookeeper instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, zooSet, r.scheme); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	found := &appsv1.StatefulSet{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: zooSet.Name, Namespace: zooSet.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", zooSet.Namespace, "StatefulSet.Name", zooSet.Name)
-		err = r.client.Create(context.TODO(), zooSet)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-		// Pod created successfully - don't requeue
+	if instance == nil {
 		return reconcile.Result{}, nil
-	} else if err != nil {
+	}
+
+	err = r.createService(instance)
+	if err != nil {
+		reqLogger.Error(err, "Failed to create Service for statefulset")
+		return reconcile.Result{}, err
+	}
+
+	err = r.createStatefulSet(instance)
+	if err != nil {
+		reqLogger.Error(err, "Failed to create statefulset")
 		return reconcile.Result{}, err
 	}
 
 	// Pod already exists - don't requeue
-	reqLogger.Info("Skip reconcile: StatefulSet already exists", "StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
-	return reconcile.Result{}, nil
+	return reconcile.Result{RequeueAfter: time.Second * reconcileInterval}, nil
+}
+
+func (r *ReconcileZookeeper) createService(instance *wnohangv1alpha1.Zookeeper) error {
+	creatLogger := log.WithValues("Instance.Namespace", instance.Namespace, "Instance.Name", instance.Name)
+	foundService := &corev1.Service{}
+	zooService, err := newServiceforCR(instance)
+	if err != nil {
+		return err
+	}
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: zooService.Name, Namespace: zooService.Namespace}, foundService)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			creatLogger.Info("Creating a new Service", "Service.Namespace", zooService.Namespace, "Service.Name", zooService.Name)
+			err = r.client.Create(context.TODO(), zooService)
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *ReconcileZookeeper) createStatefulSet(instance *wnohangv1alpha1.Zookeeper) error {
+	creatLogger := log.WithValues("Instance.Namespace", instance.Namespace, "Instance.Name", instance.Name)
+	zooSet, err := newStatefulSetForCR(instance)
+	if err != nil {
+		return err
+	}
+
+	// Set Zookeeper instance as the owner and controller
+	if err = controllerutil.SetControllerReference(instance, zooSet, r.scheme); err != nil {
+		return err
+	}
+
+	found := &appsv1.StatefulSet{}
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: zooSet.Name, Namespace: zooSet.Namespace}, found)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			creatLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", zooSet.Namespace, "StatefulSet.Name", zooSet.Name)
+			err = r.client.Create(context.TODO(), zooSet)
+		}
+		return err
+	}
+
+	creatLogger.Info("Skip reconcile: StatefulSet already exists", "StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
+	return nil
+
 }
 
 func newServiceforCR(cr *wnohangv1alpha1.Zookeeper) (*corev1.Service, error) {
@@ -237,6 +263,13 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, er
 								{
 									Name:  "ZOO_IDS",
 									Value: zooIDs,
+								},
+							},
+							ReadinessProbe: &corev1.Probe{
+								Handler: corev1.Handler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt(2181),
+									},
 								},
 							},
 						},
