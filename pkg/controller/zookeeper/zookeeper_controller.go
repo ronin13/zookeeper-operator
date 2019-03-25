@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	"k8s.io/apimachinery/pkg/util/intstr"
-
 	wnohangv1alpha1 "github.com/ronin13/zookeeper-operator/pkg/apis/wnohang/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 
@@ -213,10 +211,9 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, er
 		"app": cr.Name,
 	}
 
-	zooIDs := "1"
-
-	for nd := 2; nd <= int(cr.Spec.Nodes); nd++ {
-		zooIDs += "," + strconv.Itoa(nd)
+	zooContainer, err := getZookeeperContainer(cr.Spec.Nodes)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get Zookeeper Container")
 	}
 
 	return &appsv1.StatefulSet{
@@ -240,43 +237,43 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, er
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:            "zookeeper",
-							Image:           "ronin/zookeeper-k8s",
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "client",
-									ContainerPort: 2181,
-								},
-								{
-									Name:          "leader-election",
-									ContainerPort: 2888,
-								},
-								{
-									Name:          "cluster-comms",
-									ContainerPort: 3888,
-								},
-							},
-							Env: []corev1.EnvVar{
-								{
-									Name:  "ZOO_IDS",
-									Value: zooIDs,
-								},
-							},
-							ReadinessProbe: &corev1.Probe{
-								Handler: corev1.Handler{
-									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt(2181),
-									},
-								},
-							},
-						},
-					},
+					Containers: []corev1.Container{zooContainer},
 				},
 			},
 		},
 	}, nil
 
+}
+
+func getZookeeperContainer(numNodes int32) (corev1.Container, error) {
+	zooIDs := "1"
+
+	for nd := 2; nd <= int(numNodes); nd++ {
+		zooIDs += "," + strconv.Itoa(nd)
+	}
+	return corev1.Container{
+		Name:            "zookeeper",
+		Image:           "ronin/zookeeper-k8s",
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "client",
+				ContainerPort: 2181,
+			},
+			{
+				Name:          "leader-election",
+				ContainerPort: 2888,
+			},
+			{
+				Name:          "cluster-comms",
+				ContainerPort: 3888,
+			},
+		},
+		Env: []corev1.EnvVar{
+			{
+				Name:  "ZOO_IDS",
+				Value: zooIDs,
+			},
+		},
+	}, nil
 }
