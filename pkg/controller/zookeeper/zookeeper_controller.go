@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -81,6 +82,7 @@ type ReconcileZookeeper struct {
 	// that reads objects from the cache and writes to the apiserver
 	client client.Client
 	scheme *runtime.Scheme
+	zids   string
 }
 
 func (r *ReconcileZookeeper) getClient(request reconcile.Request) (*wnohangv1alpha1.Zookeeper, error) {
@@ -89,10 +91,13 @@ func (r *ReconcileZookeeper) getClient(request reconcile.Request) (*wnohangv1alp
 	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
 	if err != nil {
 		if errors.IsNotFound(err) {
+			log.Info("Zookeeper resource not found. Ignoring since object must be deleted.")
 			return nil, nil
 		}
+
+		log.Error(err, "Failed to get zookeeper instance")
 		// Error reading the object - requeue the request.
-		return nil, fmt.Errorf("Failed to fetch zookeeper instance")
+		return nil, err
 	}
 	return instance, nil
 }
@@ -103,6 +108,8 @@ func (r *ReconcileZookeeper) getClient(request reconcile.Request) (*wnohangv1alp
 // The Controller will requeue the Request to be processed again if the returned error is non-nil or
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
 func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Result, error) {
+	var zooSet *appsv1.StatefulSet
+	var createdSet bool
 	reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 	reqLogger.Info("Reconciling Zookeeper")
 
@@ -120,10 +127,58 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
-	err = r.createStatefulSet(instance)
+	zooSet, createdSet, err = r.createStatefulSet(instance)
 	if err != nil {
 		reqLogger.Error(err, "Failed to create statefulset")
 		return reconcile.Result{}, err
+	}
+
+	if createdSet {
+		reqLogger.Info(fmt.Sprintf("Zookeeper Cluster created with %d  nodes", int(*zooSet.Spec.Replicas)))
+		return reconcile.Result{RequeueAfter: time.Second * 60}, nil
+	}
+
+	reqLogger.Info(fmt.Sprintf("Zookeeper Cluster exists with %d  nodes", int(*zooSet.Spec.Replicas)))
+
+	size := instance.Spec.Nodes
+	// TODO: use partition here
+	// TODO2: fix for scale down
+	if *zooSet.Spec.Replicas < size {
+
+		reqLogger.Info(fmt.Sprintf("Updating statefulset to %d nodes", size))
+		// currentZids := getZooIds(*zooSet.Spec.Replicas)
+		reqZids := getZooIds(size)
+		if r.zids != reqZids {
+			reqLogger.Info(fmt.Sprintf("Updating existing pods for new pods from %s to %s", r.zids, reqZids))
+			zooSet.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+				{
+					Name:  "ZOO_IDS",
+					Value: reqZids,
+				},
+			}
+
+			err = r.client.Update(context.TODO(), zooSet)
+			if err != nil {
+				reqLogger.Error(err, "Failed to update existing Statefulset")
+				return reconcile.Result{}, err
+			}
+			r.zids = reqZids
+			time.Sleep(60 * time.Second)
+			return reconcile.Result{Requeue: true}, nil
+		}
+
+		reqLogger.Info("Adding new nodes")
+
+		zooSet.Spec.Replicas = &size
+		err = r.client.Update(context.TODO(), zooSet)
+		if err != nil {
+			reqLogger.Error(err, "Failed to update  node count")
+			return reconcile.Result{}, err
+		}
+
+		time.Sleep(60 * time.Second)
+		// Spec updated - return and requeue
+		return reconcile.Result{Requeue: true}, nil
 	}
 
 	// Pod already exists - don't requeue
@@ -135,8 +190,13 @@ func (r *ReconcileZookeeper) createService(instance *wnohangv1alpha1.Zookeeper) 
 	foundService := &corev1.Service{}
 	zooService, err := newServiceforCR(instance)
 	if err != nil {
+		// return err
+	}
+	// Set Zookeeper instance as the owner and controller
+	if err = controllerutil.SetControllerReference(instance, zooService, r.scheme); err != nil {
 		return err
 	}
+
 	err = r.client.Get(context.TODO(), types.NamespacedName{Name: zooService.Name, Namespace: zooService.Namespace}, foundService)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -148,30 +208,37 @@ func (r *ReconcileZookeeper) createService(instance *wnohangv1alpha1.Zookeeper) 
 	return nil
 }
 
-func (r *ReconcileZookeeper) createStatefulSet(instance *wnohangv1alpha1.Zookeeper) error {
+func (r *ReconcileZookeeper) createStatefulSet(instance *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, bool, error) {
+	var err error
+	var zooSet *appsv1.StatefulSet
 	creatLogger := log.WithValues("Instance.Namespace", instance.Namespace, "Instance.Name", instance.Name)
-	zooSet, err := newStatefulSetForCR(instance)
-	if err != nil {
-		return err
-	}
-
-	// Set Zookeeper instance as the owner and controller
-	if err = controllerutil.SetControllerReference(instance, zooSet, r.scheme); err != nil {
-		return err
-	}
 
 	found := &appsv1.StatefulSet{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: zooSet.Name, Namespace: zooSet.Namespace}, found)
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: instance.Name, Namespace: instance.Namespace}, found)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			creatLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", zooSet.Namespace, "StatefulSet.Name", zooSet.Name)
+			creatLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", instance.Namespace, "StatefulSet.Name", instance.Name)
+			r.zids = getZooIds(instance.Spec.Nodes)
+			zooSet, err = newStatefulSetForCR(instance, r.zids)
+			if err != nil {
+				return nil, false, fmt.Errorf("Failed get stateful set definition")
+			}
 			err = r.client.Create(context.TODO(), zooSet)
+			if err != nil {
+				return nil, true, err
+			}
+			// Set Zookeeper instance as the owner and controller
+			if err = controllerutil.SetControllerReference(instance, zooSet, r.scheme); err != nil {
+				return nil, false, err
+			}
+			// instance.Status.Sids = zids
+			return zooSet, true, nil
 		}
-		return err
+		return nil, false, err
 	}
 
-	creatLogger.Info("Skip reconcile: StatefulSet already exists", "StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
-	return nil
+	// creatLogger.Info("Skip reconcile: StatefulSet already exists", "StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
+	return found, false, nil
 
 }
 
@@ -200,18 +267,20 @@ func newServiceforCR(cr *wnohangv1alpha1.Zookeeper) (*corev1.Service, error) {
 					Port: 2181,
 				},
 			},
-			ClusterIP: "None",
+			ClusterIP:                "None",
+			PublishNotReadyAddresses: true,
+			// Type: corev1.ServiceTypeNodePort,
 		},
 	}, nil
 
 }
 
-func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, error) {
+func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper, zooIDs string) (*appsv1.StatefulSet, error) {
 	labels := map[string]string{
 		"app": cr.Name,
 	}
 
-	zooContainer, err := getZookeeperContainer(cr.Spec.Nodes)
+	zooContainer, err := getZookeeperContainer(zooIDs)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to get Zookeeper Container")
 	}
@@ -245,12 +314,18 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, er
 
 }
 
-func getZookeeperContainer(numNodes int32) (corev1.Container, error) {
+func getZooIds(numNodes int32) string {
 	zooIDs := "1"
 
 	for nd := 2; nd <= int(numNodes); nd++ {
 		zooIDs += "," + strconv.Itoa(nd)
 	}
+
+	return zooIDs
+}
+
+func getZookeeperContainer(zooIDs string) (corev1.Container, error) {
+
 	return corev1.Container{
 		Name:            "zookeeper",
 		Image:           "ronin/zookeeper-k8s",
@@ -273,6 +348,13 @@ func getZookeeperContainer(numNodes int32) (corev1.Container, error) {
 			{
 				Name:  "ZOO_IDS",
 				Value: zooIDs,
+			},
+		},
+		ReadinessProbe: &corev1.Probe{
+			Handler: corev1.Handler{
+				TCPSocket: &corev1.TCPSocketAction{
+					Port: intstr.FromInt(2181),
+				},
 			},
 		},
 	}, nil
