@@ -14,7 +14,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -110,6 +109,8 @@ func (r *ReconcileZookeeper) getClient(request reconcile.Request) (*wnohangv1alp
 func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	var zooSet *appsv1.StatefulSet
 	var createdSet bool
+
+	var defaultPartition int32
 	reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 	reqLogger.Info("Reconciling Zookeeper")
 
@@ -140,14 +141,14 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 
 	reqLogger.Info(fmt.Sprintf("Zookeeper Cluster exists with %d  nodes", int(*zooSet.Spec.Replicas)))
 
-	size := instance.Spec.Nodes
-	// TODO: use partition here
-	// TODO2: fix for scale down
-	if *zooSet.Spec.Replicas < size {
+	desSize := instance.Spec.Nodes
+	curSize := *zooSet.Spec.Replicas
+	// TODO: fix for scale down
+	if curSize < desSize {
 
-		reqLogger.Info(fmt.Sprintf("Updating statefulset to %d nodes", size))
+		reqLogger.Info(fmt.Sprintf("Updating statefulset to %d nodes", desSize))
 		// currentZids := getZooIds(*zooSet.Spec.Replicas)
-		reqZids := getZooIds(size)
+		reqZids := getZooIds(desSize)
 		if r.zids != reqZids {
 			reqLogger.Info(fmt.Sprintf("Updating existing pods for new pods from %s to %s", r.zids, reqZids))
 			zooSet.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
@@ -156,6 +157,10 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 					Value: reqZids,
 				},
 			}
+			desPartion := curSize
+			zooSet.Spec.Replicas = &desSize
+			zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &desPartion
+			reqLogger.Info(fmt.Sprintf("%+v", zooSet.Spec))
 
 			err = r.client.Update(context.TODO(), zooSet)
 			if err != nil {
@@ -163,24 +168,25 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 				return reconcile.Result{}, err
 			}
 			r.zids = reqZids
-			time.Sleep(60 * time.Second)
+			time.Sleep(100 * time.Second)
 			return reconcile.Result{Requeue: true}, nil
 		}
+	}
 
+	if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
 		reqLogger.Info("Adding new nodes")
 
-		zooSet.Spec.Replicas = &size
+		zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &defaultPartition
 		err = r.client.Update(context.TODO(), zooSet)
 		if err != nil {
 			reqLogger.Error(err, "Failed to update  node count")
 			return reconcile.Result{}, err
 		}
 
-		time.Sleep(60 * time.Second)
+		time.Sleep(100 * time.Second)
 		// Spec updated - return and requeue
 		return reconcile.Result{Requeue: true}, nil
 	}
-
 	// Pod already exists - don't requeue
 	return reconcile.Result{RequeueAfter: time.Second * reconcileInterval}, nil
 }
@@ -352,8 +358,8 @@ func getZookeeperContainer(zooIDs string) (corev1.Container, error) {
 		},
 		ReadinessProbe: &corev1.Probe{
 			Handler: corev1.Handler{
-				TCPSocket: &corev1.TCPSocketAction{
-					Port: intstr.FromInt(2181),
+				Exec: &corev1.ExecAction{
+					Command: []string{"/bin/sh", "-c", "echo mntr | nc localhost 2181 | grep -q zk_server_state"},
 				},
 			},
 		},
