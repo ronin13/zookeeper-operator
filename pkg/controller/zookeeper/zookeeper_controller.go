@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	wnohangv1alpha1 "github.com/ronin13/zookeeper-operator/pkg/apis/wnohang/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 
@@ -14,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -143,12 +146,12 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 
 	desSize := instance.Spec.Nodes
 	curSize := *zooSet.Spec.Replicas
+	reqZids := getZooIds(desSize)
 	// TODO: fix for scale down
 	if curSize < desSize {
 
 		reqLogger.Info(fmt.Sprintf("Updating statefulset to %d nodes", desSize))
 		// currentZids := getZooIds(*zooSet.Spec.Replicas)
-		reqZids := getZooIds(desSize)
 		if r.zids != reqZids {
 			reqLogger.Info(fmt.Sprintf("Updating existing pods for new pods from %s to %s", r.zids, reqZids))
 			zooSet.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
@@ -160,7 +163,6 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 			desPartion := curSize
 			zooSet.Spec.Replicas = &desSize
 			zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &desPartion
-			reqLogger.Info(fmt.Sprintf("%+v", zooSet.Spec))
 
 			err = r.client.Update(context.TODO(), zooSet)
 			if err != nil {
@@ -168,9 +170,46 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 				return reconcile.Result{}, err
 			}
 			r.zids = reqZids
-			time.Sleep(100 * time.Second)
+			time.Sleep(30 * time.Second)
 			return reconcile.Result{Requeue: true}, nil
 		}
+	}
+
+	if curSize > desSize {
+
+		reqLogger.Info(fmt.Sprintf("Updating statefulset to %d nodes", desSize))
+		// currentZids := getZooIds(*zooSet.Spec.Replicas)
+		reqLogger.Info(fmt.Sprintf("Updating existing pods for new pods from %s to %s", r.zids, reqZids))
+
+		zooSet.Spec.Replicas = &desSize
+
+		err = r.client.Update(context.TODO(), zooSet)
+		if err != nil {
+			reqLogger.Error(err, "Failed to update existing Statefulset")
+			return reconcile.Result{}, err
+		}
+		// r.zids = reqZids
+		time.Sleep(30 * time.Second)
+		return reconcile.Result{Requeue: true}, nil
+	}
+
+	if r.zids != reqZids {
+		reqLogger.Info(fmt.Sprintf("Updating existing pods for new pods from %s to %s", r.zids, reqZids))
+		zooSet.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+			{
+				Name:  "ZOO_IDS",
+				Value: reqZids,
+			},
+		}
+
+		err = r.client.Update(context.TODO(), zooSet)
+		if err != nil {
+			reqLogger.Error(err, "Failed to update existing Statefulset")
+			return reconcile.Result{}, err
+		}
+		r.zids = reqZids
+		time.Sleep(30 * time.Second)
+		return reconcile.Result{Requeue: true}, nil
 	}
 
 	if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
@@ -183,7 +222,7 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 			return reconcile.Result{}, err
 		}
 
-		time.Sleep(100 * time.Second)
+		time.Sleep(30 * time.Second)
 		// Spec updated - return and requeue
 		return reconcile.Result{Requeue: true}, nil
 	}
@@ -286,9 +325,14 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper, zooIDs string) (*appsv1.
 		"app": cr.Name,
 	}
 
-	zooContainer, err := getZookeeperContainer(zooIDs)
+	zooContainer, err := getZookeeperContainer(zooIDs, cr.Name)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to get Zookeeper Container")
+	}
+	standardStorageClass := "standard"
+	zStorage, err := resource.ParseQuantity("50Mi")
+	if err != nil {
+		return nil, fmt.Errorf("Failed to obtain storage spec")
 	}
 
 	return &appsv1.StatefulSet{
@@ -307,6 +351,33 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper, zooIDs string) (*appsv1.
 			ServiceName:         cr.Name + "-serv",
 			PodManagementPolicy: appsv1.ParallelPodManagement,
 			Replicas:            &cr.Spec.Nodes,
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+				{
+					TypeMeta: metav1.TypeMeta{
+						APIVersion: "v1",
+						Kind:       "PersistentVolumeClaim",
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      cr.Name,
+						Namespace: cr.Namespace,
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						// VolumeName: "datadir",
+						AccessModes: []corev1.PersistentVolumeAccessMode{
+							corev1.ReadWriteOnce,
+						},
+						Selector: &metav1.LabelSelector{
+							MatchLabels: labels,
+						},
+						StorageClassName: &standardStorageClass,
+						Resources: corev1.ResourceRequirements{
+							Requests: map[corev1.ResourceName]resource.Quantity{
+								corev1.ResourceStorage: zStorage,
+							},
+						},
+					},
+				},
+			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
@@ -330,7 +401,7 @@ func getZooIds(numNodes int32) string {
 	return zooIDs
 }
 
-func getZookeeperContainer(zooIDs string) (corev1.Container, error) {
+func getZookeeperContainer(zooIDs string, volume string) (corev1.Container, error) {
 
 	return corev1.Container{
 		Name:            "zookeeper",
@@ -350,6 +421,12 @@ func getZookeeperContainer(zooIDs string) (corev1.Container, error) {
 				ContainerPort: 3888,
 			},
 		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      volume,
+				MountPath: "/data",
+			},
+		},
 		Env: []corev1.EnvVar{
 			{
 				Name:  "ZOO_IDS",
@@ -357,6 +434,14 @@ func getZookeeperContainer(zooIDs string) (corev1.Container, error) {
 			},
 		},
 		ReadinessProbe: &corev1.Probe{
+			Handler: corev1.Handler{
+				TCPSocket: &corev1.TCPSocketAction{
+					Port: intstr.FromInt(2181),
+				},
+			},
+		},
+
+		LivenessProbe: &corev1.Probe{
 			Handler: corev1.Handler{
 				Exec: &corev1.ExecAction{
 					Command: []string{"/bin/sh", "-c", "echo mntr | nc localhost 2181 | grep -q zk_server_state"},
