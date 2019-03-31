@@ -160,45 +160,6 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 	}
 
 	reqLogger.Info(fmt.Sprintf("Zookeeper Cluster exists with %d  nodes", int(*zooSet.Spec.Replicas)))
-
-	desSize := instance.Spec.Nodes
-	curSize := *zooSet.Spec.Replicas
-	if curSize != desSize {
-
-		reqZids := getZooIds(desSize)
-		reqLogger.Info(fmt.Sprintf("Updating statefulset to %d nodes", desSize))
-		// currentZids := getZooIds(*zooSet.Spec.Replicas)
-		reqLogger.Info(fmt.Sprintf("Current zids %v  required zids %v", r.zids, reqZids))
-		if r.zids != reqZids {
-			reqLogger.Info(fmt.Sprintf("Updating existing pods for new pods from %s to %s", r.zids, reqZids))
-			zooSet.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
-				{
-					Name:  "ZOO_IDS",
-					Value: reqZids,
-				},
-			}
-			if curSize < desSize {
-				desPartition = curSize
-
-			} else {
-				desPartition = desSize
-
-			}
-			reqLogger.Info(fmt.Sprintf("Setting parttion to %d", desPartition))
-			zooSet.Spec.Replicas = &desSize
-			zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &desPartition
-
-			err = r.client.Update(context.TODO(), zooSet)
-			if err != nil {
-				reqLogger.Error(err, "Failed to update existing Statefulset")
-				return reconcile.Result{}, err
-			}
-			r.zids = reqZids
-			time.Sleep(30 * time.Second)
-			return reconcile.Result{Requeue: true}, nil
-		}
-	}
-
 	if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
 		reqLogger.Info("Adding new nodes")
 
@@ -209,8 +170,45 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 			return reconcile.Result{}, err
 		}
 
-		time.Sleep(30 * time.Second)
+		time.Sleep(5 * time.Second)
 		// Spec updated - return and requeue
+		return reconcile.Result{Requeue: true}, nil
+	}
+
+	reqSize := instance.Spec.Nodes
+	curSize := *zooSet.Spec.Replicas
+	if curSize != reqSize {
+
+		desSize := curSize + 1
+		reqZids := getZooIds(desSize)
+		reqLogger.Info(fmt.Sprintf("Updating statefulset to %d nodes", desSize))
+		// currentZids := getZooIds(*zooSet.Spec.Replicas)
+		reqLogger.Info(fmt.Sprintf("Current zids %v  required zids %v", r.zids, reqZids))
+		reqLogger.Info(fmt.Sprintf("Updating existing pods for new pods from %s to %s", r.zids, reqZids))
+		zooSet.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+			{
+				Name:  "ZOO_IDS",
+				Value: reqZids,
+			},
+		}
+		if curSize < desSize {
+			desPartition = curSize
+
+		} else {
+			desPartition = desSize
+
+		}
+		reqLogger.Info(fmt.Sprintf("Setting parttion to %d", desPartition))
+		zooSet.Spec.Replicas = &desSize
+		zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &desPartition
+
+		err = r.client.Update(context.TODO(), zooSet)
+		if err != nil {
+			reqLogger.Error(err, "Failed to update existing Statefulset")
+			return reconcile.Result{}, err
+		}
+		r.zids = reqZids
+		time.Sleep(5 * time.Second)
 		return reconcile.Result{Requeue: true}, nil
 	}
 
