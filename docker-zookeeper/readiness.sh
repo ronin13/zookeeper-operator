@@ -1,6 +1,8 @@
 #!/bin/bash
 
-state=$(echo mntr | nc zoos-serv 2181 | grep zk_server_state)
+SERVICE=$(hostname | cut -d- -f1)
+
+echo mntr | nc ${SERVICE}-serv 2181 | grep zk_server_state
 
 # Bootstrapping-like
 if [[ $? -ne 0 ]];then
