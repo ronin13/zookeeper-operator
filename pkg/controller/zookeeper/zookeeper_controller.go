@@ -145,7 +145,7 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 
 	if createdService {
 		reqLogger.Info("Zookeeper Service created")
-		return reconcile.Result{RequeueAfter: time.Second * 10}, nil
+		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
 	}
 
 	zooSet, createdSet, err = r.createStatefulSet(instance)
@@ -156,16 +156,16 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 
 	if createdSet {
 		reqLogger.Info(fmt.Sprintf("Zookeeper Cluster created with %d  nodes", int(*zooSet.Spec.Replicas)))
-		return reconcile.Result{RequeueAfter: time.Second * 30}, nil
+		return reconcile.Result{RequeueAfter: time.Second * 10}, nil
 	}
 
 	reqLogger.Info(fmt.Sprintf("Zookeeper Cluster exists with %d  nodes", int(*zooSet.Spec.Replicas)))
 
 	desSize := instance.Spec.Nodes
 	curSize := *zooSet.Spec.Replicas
-	reqZids := getZooIds(desSize)
 	if curSize != desSize {
 
+		reqZids := getZooIds(desSize)
 		reqLogger.Info(fmt.Sprintf("Updating statefulset to %d nodes", desSize))
 		// currentZids := getZooIds(*zooSet.Spec.Replicas)
 		reqLogger.Info(fmt.Sprintf("Current zids %v  required zids %v", r.zids, reqZids))
@@ -199,25 +199,6 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		}
 	}
 
-	/* 	if r.zids != reqZids {
-	   		reqLogger.Info(fmt.Sprintf("Updating existing pods for new pods from %s to %s", r.zids, reqZids))
-	   		zooSet.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
-	   			{
-	   				Name:  "ZOO_IDS",
-	   				Value: reqZids,
-	   			},
-	   		}
-
-	   		err = r.client.Update(context.TODO(), zooSet)
-	   		if err != nil {
-	   			reqLogger.Error(err, "Failed to update existing Statefulset")
-	   			return reconcile.Result{}, err
-	   		}
-	   		r.zids = reqZids
-	   		time.Sleep(30 * time.Second)
-	   		return reconcile.Result{Requeue: true}, nil
-	   	}
-	*/
 	if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
 		reqLogger.Info("Adding new nodes")
 
@@ -232,8 +213,8 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		// Spec updated - return and requeue
 		return reconcile.Result{Requeue: true}, nil
 	}
-	// Pod already exists - don't requeue
-	return reconcile.Result{RequeueAfter: time.Second * reconcileInterval}, nil
+
+	return reconcile.Result{}, nil
 }
 
 func (r *ReconcileZookeeper) createService(instance *wnohangv1alpha1.Zookeeper) (bool, error) {
