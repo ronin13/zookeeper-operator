@@ -89,6 +89,7 @@ $ for x in 0 1 2;do kubectl exec zoos-$x -- sh -c  "echo -n $x' ';  echo mntr  |
 
 # Cleanup
 $ kubectl delete -R -f deploy/
+$ kubectl delete  statefulsets/zoos pvc/zoos-zoos-{0,1,2} 
 
 
 ```
