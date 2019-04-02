@@ -171,20 +171,10 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 			return reconcile.Result{}, err
 		}
 
-		for {
-			reqLogger.Info("Waiting for pods to become ready")
-			allReady, err := r.allPodsReady(instance)
-			if err != nil {
-				reqLogger.Error(err, "Failed to get pod statuses")
-				return reconcile.Result{}, nil
-			}
-			if !allReady {
-				reqLogger.Info("Sleeping for 5 seconds")
-				time.Sleep(5 * time.Second)
-			} else {
-				break
-			}
-
+		// time.Sleep(5 * time.Second)
+		if err = r.waitTillAllPodsReady(instance); err != nil {
+			reqLogger.Error(err, "Pods are not ready after last change")
+			return reconcile.Result{}, err
 		}
 
 		// Spec updated - return and requeue
@@ -214,7 +204,7 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 			desPartition = desSize
 
 		}
-		reqLogger.Info(fmt.Sprintf("Setting parttion to %d", desPartition))
+		reqLogger.Info(fmt.Sprintf("Setting partition to %d", desPartition))
 		zooSet.Spec.Replicas = &desSize
 		zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &desPartition
 
@@ -225,15 +215,18 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		}
 		r.zids = reqZids
 		time.Sleep(5 * time.Second)
+		if err = r.waitTillAllPodsReady(instance); err != nil {
+			reqLogger.Error(err, "Pods are not ready after last change")
+			return reconcile.Result{}, err
+		}
 		return reconcile.Result{Requeue: true}, nil
 	}
 
 	return reconcile.Result{}, nil
 }
 
-func (r *ReconcileZookeeper) allPodsReady(instance *wnohangv1alpha1.Zookeeper) (bool, error) {
+func (r *ReconcileZookeeper) waitTillAllPodsReady(instance *wnohangv1alpha1.Zookeeper) error {
 	podList := &corev1.PodList{}
-	isReady := true
 	labelSelector := labels.SelectorFromSet(map[string]string{"app": instance.Name})
 	listOps := &client.ListOptions{
 		Namespace:     instance.Namespace,
@@ -251,14 +244,38 @@ func (r *ReconcileZookeeper) allPodsReady(instance *wnohangv1alpha1.Zookeeper) (
 	}
 	err := r.client.List(context.TODO(), listOps, podList)
 	if err != nil {
-		return false, err
+		log.Error(err, "Failed to list pods")
+		return err
 	}
-	for _, pod := range podList.Items {
-		log.Info(fmt.Sprintf("Pod Status %v", pod.Status.ContainerStatuses[0]))
-		isReady = isReady && pod.Status.ContainerStatuses[0].Ready
-	}
+	maxWait := 12
+	isReady := true
+	for {
+		isReady = true
+		log.Info("Waiting for pods to become ready")
+		for _, pod := range podList.Items {
+			if len(pod.Status.ContainerStatuses) == 0 {
+				log.Info("Not ready yet due to containers not being ready yet.")
+				time.Sleep(2 * time.Second)
+				isReady = false
+				break
+			}
+			isReady = isReady && pod.Status.ContainerStatuses[0].Ready
+		}
+		log.Info(fmt.Sprintf("Max Wait %d isReady %v", maxWait, isReady))
 
-	return isReady, nil
+		if !isReady {
+			if maxWait <= 0 {
+				log.Error(fmt.Errorf("Max wait reached"), "Failed to wait")
+				return nil
+			}
+			log.Info("Sleeping for 5 seconds till all pods become ready")
+			time.Sleep(5 * time.Second)
+			maxWait--
+		} else {
+			return nil
+		}
+
+	}
 
 }
 
