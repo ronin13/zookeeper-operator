@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/labels"
 
 	wnohangv1alpha1 "github.com/ronin13/zookeeper-operator/pkg/apis/wnohang/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -170,7 +171,22 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 			return reconcile.Result{}, err
 		}
 
-		time.Sleep(5 * time.Second)
+		for {
+			reqLogger.Info("Waiting for pods to become ready")
+			allReady, err := r.allPodsReady(instance)
+			if err != nil {
+				reqLogger.Error(err, "Failed to get pod statuses")
+				return reconcile.Result{}, nil
+			}
+			if !allReady {
+				reqLogger.Info("Sleeping for 5 seconds")
+				time.Sleep(5 * time.Second)
+			} else {
+				break
+			}
+
+		}
+
 		// Spec updated - return and requeue
 		return reconcile.Result{Requeue: true}, nil
 	}
@@ -213,6 +229,37 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 	}
 
 	return reconcile.Result{}, nil
+}
+
+func (r *ReconcileZookeeper) allPodsReady(instance *wnohangv1alpha1.Zookeeper) (bool, error) {
+	podList := &corev1.PodList{}
+	isReady := true
+	labelSelector := labels.SelectorFromSet(map[string]string{"app": instance.Name})
+	listOps := &client.ListOptions{
+		Namespace:     instance.Namespace,
+		LabelSelector: labelSelector,
+		// HACK: due to a fake client bug, ListOptions.Raw.TypeMeta must be
+		// explicitly populated for testing.
+		//
+		// See https://github.com/kubernetes-sigs/controller-runtime/issues/168
+		Raw: &metav1.ListOptions{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Zookeeper",
+				APIVersion: wnohangv1alpha1.SchemeGroupVersion.Version,
+			},
+		},
+	}
+	err := r.client.List(context.TODO(), listOps, podList)
+	if err != nil {
+		return false, err
+	}
+	for _, pod := range podList.Items {
+		log.Info(fmt.Sprintf("Pod Status %v", pod.Status.ContainerStatuses[0]))
+		isReady = isReady && pod.Status.ContainerStatuses[0].Ready
+	}
+
+	return isReady, nil
+
 }
 
 func (r *ReconcileZookeeper) createService(instance *wnohangv1alpha1.Zookeeper) (bool, error) {
