@@ -157,11 +157,18 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 
 	if createdSet {
 		reqLogger.Info(fmt.Sprintf("Zookeeper Cluster created with %d  nodes", int(*zooSet.Spec.Replicas)))
-		return reconcile.Result{RequeueAfter: time.Second * 10}, nil
+		return reconcile.Result{RequeueAfter: time.Second * 30}, nil
+	}
+	if err = r.waitTillAllPodsReady(instance); err != nil {
+		reqLogger.Info("Pods are not ready after last change, sleeping for 10s")
+		return reconcile.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
 	reqLogger.Info(fmt.Sprintf("Zookeeper Cluster exists with %d  nodes", int(*zooSet.Spec.Replicas)))
-	if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
+	reqSize := instance.Spec.Nodes
+	curSize := *zooSet.Spec.Replicas
+	// if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
+	if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 && reqSize == curSize {
 		reqLogger.Info("Adding new nodes")
 
 		zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &defaultPartition
@@ -171,18 +178,10 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 			return reconcile.Result{}, err
 		}
 
-		// time.Sleep(5 * time.Second)
-		if err = r.waitTillAllPodsReady(instance); err != nil {
-			reqLogger.Error(err, "Pods are not ready after last change")
-			return reconcile.Result{}, err
-		}
-
 		// Spec updated - return and requeue
 		return reconcile.Result{Requeue: true}, nil
 	}
 
-	reqSize := instance.Spec.Nodes
-	curSize := *zooSet.Spec.Replicas
 	if curSize != reqSize {
 
 		desSize := curSize + 1
@@ -215,10 +214,6 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		}
 		r.zids = reqZids
 		time.Sleep(5 * time.Second)
-		if err = r.waitTillAllPodsReady(instance); err != nil {
-			reqLogger.Error(err, "Pods are not ready after last change")
-			return reconcile.Result{}, err
-		}
 		return reconcile.Result{Requeue: true}, nil
 	}
 
@@ -226,50 +221,36 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 }
 
 func (r *ReconcileZookeeper) waitTillAllPodsReady(instance *wnohangv1alpha1.Zookeeper) error {
+	var isReady bool
 	podList := &corev1.PodList{}
 	labelSelector := labels.SelectorFromSet(map[string]string{"app": instance.Name})
 	listOps := &client.ListOptions{
 		Namespace:     instance.Namespace,
 		LabelSelector: labelSelector,
-		// HACK: due to a fake client bug, ListOptions.Raw.TypeMeta must be
-		// explicitly populated for testing.
-		//
-		// See https://github.com/kubernetes-sigs/controller-runtime/issues/168
-		Raw: &metav1.ListOptions{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "Zookeeper",
-				APIVersion: wnohangv1alpha1.SchemeGroupVersion.Version,
-			},
-		},
 	}
 	err := r.client.List(context.TODO(), listOps, podList)
 	if err != nil {
 		log.Error(err, "Failed to list pods")
 		return err
 	}
-	maxWait := 12
-	isReady := true
+	maxWait := 3
 	for {
 		isReady = true
 		log.Info("Waiting for pods to become ready")
 		for _, pod := range podList.Items {
-			if len(pod.Status.ContainerStatuses) == 0 {
-				log.Info("Not ready yet due to containers not being ready yet.")
-				time.Sleep(2 * time.Second)
+			if pod.Status.Phase != corev1.PodRunning {
 				isReady = false
-				break
+				return fmt.Errorf("Need to wait longer")
 			}
+			log.Info(fmt.Sprintf("Pod %s %+v", pod.Name, pod.Status.ContainerStatuses[0].Ready))
 			isReady = isReady && pod.Status.ContainerStatuses[0].Ready
 		}
-		log.Info(fmt.Sprintf("Max Wait %d isReady %v", maxWait, isReady))
 
 		if !isReady {
 			if maxWait <= 0 {
-				log.Error(fmt.Errorf("Max wait reached"), "Failed to wait")
-				return nil
+				return fmt.Errorf("Timeout")
 			}
-			log.Info("Sleeping for 5 seconds till all pods become ready")
-			time.Sleep(5 * time.Second)
+			time.Sleep(1 * time.Second)
 			maxWait--
 		} else {
 			return nil

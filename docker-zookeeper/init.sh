@@ -27,6 +27,6 @@ done
 
 echo $myord > "$ZOO_DATA_DIR/myid"
 
-sleep 2
+sleep 3
 
 exec gosu zookeeper /usr/share/zookeeper/bin/zkServer.sh start-foreground
