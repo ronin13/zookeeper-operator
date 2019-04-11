@@ -4,6 +4,9 @@ ENV OPERATOR=/usr/local/bin/zookeeper-operator \
     USER_UID=1001 \
     USER_NAME=zookeeper-operator
 
+RUN apt-get update
+
+RUN apt-get -y install netcat
 # install operator binary
 COPY build/_output/bin/zookeeper-operator ${OPERATOR}
 

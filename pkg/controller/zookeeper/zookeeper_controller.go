@@ -3,7 +3,9 @@ package zookeeper
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -13,10 +15,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -123,10 +127,10 @@ func (r *ReconcileZookeeper) getClient(request reconcile.Request) (*wnohangv1alp
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
 func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	var zooSet *appsv1.StatefulSet
-	var createdSet, createdService bool
+	var createdSet, createdService, zkReady bool
 	var desPartition int32
 
-	var defaultPartition int32
+	// var defaultPartition int32
 	reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 	reqLogger.Info("Reconciling Zookeeper")
 
@@ -138,8 +142,7 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, nil
 	}
 
-	createdService, err = r.createService(instance)
-	if err != nil {
+	if createdService, err = r.createService(instance); err != nil {
 		reqLogger.Error(err, "Failed to create Service for statefulset")
 		return reconcile.Result{}, err
 	}
@@ -149,8 +152,7 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
 	}
 
-	zooSet, createdSet, err = r.createStatefulSet(instance)
-	if err != nil {
+	if zooSet, createdSet, err = r.createStatefulSet(instance); err != nil {
 		reqLogger.Error(err, "Failed to create statefulset")
 		return reconcile.Result{}, err
 	}
@@ -159,7 +161,12 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		reqLogger.Info(fmt.Sprintf("Zookeeper Cluster created with %d  nodes", int(*zooSet.Spec.Replicas)))
 		return reconcile.Result{RequeueAfter: time.Second * 30}, nil
 	}
-	if err = r.waitTillAllPodsReady(instance); err != nil {
+	if zkReady, err = r.isZKReady(instance); err != nil {
+		reqLogger.Error(err, "Failed to get ready status")
+		return reconcile.Result{RequeueAfter: 10 * time.Second}, nil
+
+	}
+	if !zkReady {
 		reqLogger.Info("Pods are not ready after last change, sleeping for 10s")
 		return reconcile.Result{RequeueAfter: 10 * time.Second}, nil
 	}
@@ -170,10 +177,10 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 	// if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
 	if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 && reqSize == curSize {
 		reqLogger.Info("Adding new nodes")
+		reqPartition := *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition - 1
 
-		zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &defaultPartition
-		err = r.client.Update(context.TODO(), zooSet)
-		if err != nil {
+		zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &reqPartition
+		if err = r.client.Update(context.TODO(), zooSet); err != nil {
 			reqLogger.Error(err, "Failed to update  node count")
 			return reconcile.Result{}, err
 		}
@@ -207,8 +214,7 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		zooSet.Spec.Replicas = &desSize
 		zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &desPartition
 
-		err = r.client.Update(context.TODO(), zooSet)
-		if err != nil {
+		if err = r.client.Update(context.TODO(), zooSet); err != nil {
 			reqLogger.Error(err, "Failed to update existing Statefulset")
 			return reconcile.Result{}, err
 		}
@@ -220,8 +226,9 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 	return reconcile.Result{}, nil
 }
 
-func (r *ReconcileZookeeper) waitTillAllPodsReady(instance *wnohangv1alpha1.Zookeeper) error {
+func (r *ReconcileZookeeper) isZKReady(instance *wnohangv1alpha1.Zookeeper) (bool, error) {
 	var isReady bool
+	var stateCommand string
 	podList := &corev1.PodList{}
 	labelSelector := labels.SelectorFromSet(map[string]string{"app": instance.Name})
 	listOps := &client.ListOptions{
@@ -231,32 +238,25 @@ func (r *ReconcileZookeeper) waitTillAllPodsReady(instance *wnohangv1alpha1.Zook
 	err := r.client.List(context.TODO(), listOps, podList)
 	if err != nil {
 		log.Error(err, "Failed to list pods")
-		return err
+		return false, err
 	}
-	maxWait := 3
-	for {
-		isReady = true
-		log.Info("Waiting for pods to become ready")
-		for _, pod := range podList.Items {
-			if pod.Status.Phase != corev1.PodRunning {
-				isReady = false
-				return fmt.Errorf("Need to wait longer")
-			}
-			log.Info(fmt.Sprintf("Pod %s %+v", pod.Name, pod.Status.ContainerStatuses[0].Ready))
-			isReady = isReady && pod.Status.ContainerStatuses[0].Ready
-		}
+	isReady = true
+	log.Info("Waiting for pods to become ready")
+	for _, pod := range podList.Items {
 
-		if !isReady {
-			if maxWait <= 0 {
-				return fmt.Errorf("Timeout")
+		log.Info(fmt.Sprintf("Pod %s %+v", pod.Name, pod.Status.ContainerStatuses[0].Ready))
+		isReady = isReady && podutil.IsPodReady(&pod)
+		if isReady {
+			stateCommand = fmt.Sprintf("echo mntr | nc %s 2181 | grep zk_server_state | grep -q leader", pod.Status.PodIP)
+			_, err := exec.Command("sh", "-c", stateCommand).Output()
+			if err == nil {
+				log.Info(fmt.Sprintf("Found leader with name %s", pod.Name))
+				instance.Status.LeaderID, _ = strconv.Atoi(strings.Split(pod.Name, "-")[1])
 			}
-			time.Sleep(1 * time.Second)
-			maxWait--
-		} else {
-			return nil
 		}
 
 	}
+	return isReady, nil
 
 }
 
@@ -378,6 +378,7 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper, zooIDs string) (*appsv1.
 	}
 
 	standardStorageClass := "standard"
+	gracePeriodSeconds := int64(2)2
 
 	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{
@@ -427,7 +428,8 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper, zooIDs string) (*appsv1.
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{zooContainer},
+					Containers:                    []corev1.Container{zooContainer},
+					TerminationGracePeriodSeconds: &gracePeriodSeconds,
 				},
 			},
 		},
@@ -483,14 +485,20 @@ func getZookeeperContainer(zooIDs string, volume string) (corev1.Container, erro
 					Command: []string{"/readiness.sh"},
 				},
 			},
+			InitialDelaySeconds: 1,
 		},
 
-		LivenessProbe: &corev1.Probe{
+		LivenessProbe: &v1.Probe{
 			Handler: corev1.Handler{
 				Exec: &corev1.ExecAction{
-					Command: []string{"/bin/sh", "-c", "echo mntr | nc localhost 2181 | grep -q zk_server_state"},
+					Command: []string{
+						"/bin/sh",
+						"-c",
+						"echo mntr | nc localhost 2181 | grep -q zk_server_state",
+					},
 				},
 			},
+			InitialDelaySeconds: 60,
 		},
 	}, nil
 }
