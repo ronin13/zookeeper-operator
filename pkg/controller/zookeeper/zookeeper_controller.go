@@ -176,7 +176,6 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 	curSize := *zooSet.Spec.Replicas
 	// if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
 	if *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition != 0 && reqSize == curSize {
-		reqLogger.Info("Adding new nodes")
 		reqPartition := *zooSet.Spec.UpdateStrategy.RollingUpdate.Partition - 1
 
 		zooSet.Spec.UpdateStrategy.RollingUpdate.Partition = &reqPartition
@@ -244,14 +243,18 @@ func (r *ReconcileZookeeper) isZKReady(instance *wnohangv1alpha1.Zookeeper) (boo
 	log.Info("Waiting for pods to become ready")
 	for _, pod := range podList.Items {
 
-		log.Info(fmt.Sprintf("Pod %s %+v", pod.Name, pod.Status.ContainerStatuses[0].Ready))
+		// log.Info(fmt.Sprintf("Pod %s %+v", pod.Name, pod.Status.ContainerStatuses[0].Ready))
 		isReady = isReady && podutil.IsPodReady(&pod)
 		if isReady {
 			stateCommand = fmt.Sprintf("echo mntr | nc %s 2181 | grep zk_server_state | grep -q leader", pod.Status.PodIP)
 			_, err := exec.Command("sh", "-c", stateCommand).Output()
 			if err == nil {
 				log.Info(fmt.Sprintf("Found leader with name %s", pod.Name))
-				instance.Status.LeaderID, _ = strconv.Atoi(strings.Split(pod.Name, "-")[1])
+				// instance.Status.LeaderID, _ = strconv.Atoi(strings.Split(pod.Name, "-")[1])
+				lid, _ := strconv.Atoi(strings.Split(pod.Name, "-")[1])
+				if lid != instance.Status.LeaderID {
+					instance.Status.LeaderID = lid
+				}
 			}
 		}
 
@@ -378,7 +381,7 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper, zooIDs string) (*appsv1.
 	}
 
 	standardStorageClass := "standard"
-	gracePeriodSeconds := int64(2)2
+	gracePeriodSeconds := int64(2)
 
 	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{
