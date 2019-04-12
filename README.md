@@ -1,4 +1,5 @@
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/ronin13/zookeeper-operator)](https://goreportcard.com/report/github.com/ronin13/zookeeper-operator)
 ## Overview
 
 zookeeper-operator implements an operator for Zookeeper 3.4.x based on [operator-sdk](https://github.com/operator-framework/operator-sdk)
