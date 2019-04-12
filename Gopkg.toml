@@ -29,6 +29,10 @@ required = [
   version = "=v0.1.8"
 
 [[override]]
+  name = "k8s.io/kubernetes"
+  version = "=1.13.1"
+
+[[override]]
   name = "k8s.io/api"
   # revision for tag "kubernetes-1.13.1"
   revision = "05914d821849570fba9eacfb29466f2d8d3cd229"
@@ -59,8 +63,8 @@ required = [
 [[constraint]]
   name = "github.com/operator-framework/operator-sdk"
   # The version rule is used for a specific release and the master branch for in between releases.
-  branch = "master" #osdk_branch_annotation
-  # version = "=v0.5.0" #osdk_version_annotation
+  #branch = "master" #osdk_branch_annotation
+  version = "=v0.7.0" #osdk_version_annotation
 
 [prune]
   go-tests = true
@@ -73,3 +77,4 @@ required = [
   [[prune.project]]
     name = "k8s.io/gengo"
     non-go = false
+
