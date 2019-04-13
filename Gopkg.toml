@@ -78,3 +78,7 @@ required = [
     name = "k8s.io/gengo"
     non-go = false
 
+
+[[constraint]]
+  name = "github.com/pkg/errors"
+  version = "0.8.1"

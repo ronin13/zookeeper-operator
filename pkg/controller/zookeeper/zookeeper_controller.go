@@ -3,14 +3,12 @@ package zookeeper
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"strconv"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/apimachinery/pkg/labels"
 
 	wnohangv1alpha1 "github.com/ronin13/zookeeper-operator/pkg/apis/wnohang/v1alpha1"
+	"github.com/ronin13/zookeeper-operator/pkg/zkutils"
 	appsv1 "k8s.io/api/apps/v1"
 
 	corev1 "k8s.io/api/core/v1"
@@ -19,7 +17,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -118,6 +115,7 @@ func getInstance(zkClient client.Client, request reconcile.Request) (*wnohangv1a
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
 func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	var zooSet *appsv1.StatefulSet
+	var reqZids string
 	var createdSet, createdService, zkReady bool
 
 	// var defaultPartition int32
@@ -152,7 +150,7 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 		reqLogger.Info(fmt.Sprintf("Zookeeper Cluster %s created with %d  nodes", request.Name, int(*zooSet.Spec.Replicas)))
 		return reconcile.Result{RequeueAfter: time.Second * 30}, nil
 	}
-	if zkReady, err = isZKReady(r.client, instance); err != nil {
+	if zkReady, err = zkutils.IsZKReady(r.client, instance); err != nil {
 		reqLogger.Error(err, "Failed to get ready status")
 		return reconcile.Result{RequeueAfter: 10 * time.Second}, nil
 
@@ -180,7 +178,9 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 			desSize = curSize + 1
 
 		}
-		reqZids := getZooIds(desSize)
+		if reqZids, err = zkutils.GetZooIds(uint32(desSize)); err != nil {
+			return reconcile.Result{}, err
+		}
 		reqLogger.Info(fmt.Sprintf("Updating statefulset to %d nodes", desSize))
 		if instance.Status.Zids != reqZids {
 			reqLogger.Info(fmt.Sprintf("Current zids %v  required zids %v", instance.Status.Zids, reqZids))
@@ -233,38 +233,6 @@ func (r *ReconcileZookeeper) Reconcile(request reconcile.Request) (reconcile.Res
 	return reconcile.Result{}, nil
 }
 
-func isZKReady(zkClient client.Client, instance *wnohangv1alpha1.Zookeeper) (bool, error) {
-	var isReady bool
-	var stateCommand string
-	podList := &corev1.PodList{}
-	labelSelector := labels.SelectorFromSet(map[string]string{"app": instance.Name})
-	listOps := &client.ListOptions{
-		Namespace:     instance.Namespace,
-		LabelSelector: labelSelector,
-	}
-	err := zkClient.List(context.TODO(), listOps, podList)
-	if err != nil {
-		log.Error(err, "Failed to list pods")
-		return false, err
-	}
-	isReady = true
-	log.Info("Waiting for pods to become ready")
-	for _, pod := range podList.Items {
-
-		isReady = isReady && podutil.IsPodReady(&pod)
-		if isReady {
-			stateCommand = fmt.Sprintf("echo mntr | nc %s 2181 | grep zk_server_state | grep -q leader", pod.Status.PodIP)
-			_, err := exec.Command("sh", "-c", stateCommand).Output()
-			if err == nil {
-				log.Info(fmt.Sprintf("Found leader with name %s", pod.Name))
-			}
-		}
-
-	}
-	return isReady, nil
-
-}
-
 func createService(zkClient client.Client, zkScheme *runtime.Scheme, instance *wnohangv1alpha1.Zookeeper) (bool, error) {
 	creatLogger := log.WithValues("Instance.Namespace", instance.Namespace, "Instance.Name", instance.Name)
 	foundService := &corev1.Service{}
@@ -302,7 +270,9 @@ func createStatefulSet(zkClient client.Client, zkScheme *runtime.Scheme, instanc
 	if err != nil {
 		if errors.IsNotFound(err) {
 			creatLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", instance.Namespace, "StatefulSet.Name", instance.Name)
-			instance.Status.Zids = getZooIds(instance.Spec.Nodes)
+			if instance.Status.Zids, err = zkutils.GetZooIds(uint32(instance.Spec.Nodes)); err != nil {
+				return &appsv1.StatefulSet{}, false, err
+			}
 			err := zkClient.Status().Update(context.TODO(), instance)
 			if err != nil {
 				creatLogger.Error(err, "Failed to update zids in instance")
@@ -445,16 +415,6 @@ func newStatefulSetForCR(cr *wnohangv1alpha1.Zookeeper) (*appsv1.StatefulSet, er
 		},
 	}, nil
 
-}
-
-func getZooIds(numNodes int32) string {
-	zooIDs := "1"
-
-	for nd := 2; nd <= int(numNodes); nd++ {
-		zooIDs += "," + strconv.Itoa(nd)
-	}
-
-	return zooIDs
 }
 
 func getZookeeperContainer(zooIDs string, volume string) (corev1.Container, error) {
