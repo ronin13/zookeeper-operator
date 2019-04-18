@@ -94,5 +94,11 @@ $ for x in 0 1 2;do kubectl exec zoos-$x -- sh -c  "echo -n $x' ';  echo mntr  |
 $ kubectl delete -R -f deploy/
 $ kubectl delete  statefulsets/zoos pvc/zoos-zoos-{0,1,2} 
 
+# Scaling up/down
+
+$ kubectl edit zookeeper.wnohang.net/zoos
+# Bump the nodes of replicas and save.
+
+
 
 ```

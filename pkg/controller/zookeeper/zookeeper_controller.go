@@ -30,7 +30,6 @@ import (
 var log = logf.Log.WithName("Zookeeper Operator")
 
 const (
-	reconcileInterval    = 10
 	defaultStorage       = "50Mi"
 	defaultInstanceCount = 3
 )
@@ -238,7 +237,8 @@ func createService(zkClient client.Client, zkScheme *runtime.Scheme, instance *w
 	foundService := &corev1.Service{}
 	zooService, err := newServiceforCR(instance)
 	if err != nil {
-		// return err
+		creatLogger.Error(err, "Failed to obtain service CR")
+		return false, err
 	}
 	// Set Zookeeper instance as the owner and controller
 	if err = controllerutil.SetControllerReference(instance, zooService, zkScheme); err != nil {

@@ -3,4 +3,4 @@ language: go
 go:
     - 1.12.x
 script:
-    go test -cover -v $(go list ./... | grep 'pkg/')
+    make unit
