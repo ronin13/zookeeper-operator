@@ -1,4 +1,5 @@
 
+[![GoDoc](https://godoc.org/github.com/ronin13/zookeeper-operator?status.svg)](https://godoc.org/github.com/ronin13/zookeeper-operator)
 [![Build Status](https://travis-ci.org/ronin13/zookeeper-operator.svg?branch=master)](https://travis-ci.org/ronin13/zookeeper-operator)
 [![Go Report Card](https://goreportcard.com/badge/github.com/ronin13/zookeeper-operator)](https://goreportcard.com/report/github.com/ronin13/zookeeper-operator)
 ## Overview
